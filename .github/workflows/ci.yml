@@ -178,6 +178,29 @@ jobs:
 
       - name: Build and push builder image
         uses: docker/build-push-action@v5
+
+        with:
+            context: ./
+            file: ./Dockerfile
+            builder: ${{ steps.buildx.outputs.name }}
+            build-args: |
+              DEFAULT_MODE=${{ matrix.mode }}
+            target: builder
+            push: true
+            tags: ${{ steps.setup.outputs.ghcr-builder-tags }}
+            cache-from: type=local,src=/tmp/.buildx-cache
+            cache-to: type=local,dest=/tmp/.buildx-cache
+
+      - name: Docker login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push builder image
+        uses: docker/build-push-action@v5
+
         with:
             context: ./
             file: ./Dockerfile
@@ -270,6 +293,7 @@ jobs:
           sudo apt-get install nmap
 
       - name: Docker login GHCR
+
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
