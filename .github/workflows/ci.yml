@@ -1,6 +1,10 @@
 # This is a basic workflow to help in CI
 name: Polycube CI
 
+permissions:
+  contents: read
+  packages: write
+
 # Controls when the action will run. Triggers the workflow on schedule events
 on:
   push:
@@ -21,7 +25,7 @@ on:
 
 env:
   app-container: polycubed
-  app-registry: polycubenets
+  app-registry: ghcr.io/${{ github.repository_owner }}
 
 jobs:
   # This job deal with retrieving variables for workflow configuration
@@ -133,7 +137,7 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository (default master)
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: true
           persist-credentials: false
@@ -142,10 +146,10 @@ jobs:
 
       - name: Set up Docker Buildx
         id: buildx
-        uses: docker/setup-buildx-action@v1
+        uses: docker/setup-buildx-action@v3
 
       - name: Cache Docker layers
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
             path: /tmp/.buildx-cache
             key: ${{ runner.os }}-buildx-${{ github.sha }}
@@ -156,23 +160,41 @@ jobs:
         id: setup
         run: |
           repo=${{ env.app-registry }}/${{ matrix.name }}
+          builder_repo=ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}-builder
           if [[ "${{ needs.configure.outputs.state }}" == "dev" ]]; then
             echo "::set-output name=repo-tags::$repo:${{ needs.configure.outputs.ref }}"
+            echo "::set-output name=ghcr-builder-tags::$builder_repo:${{ needs.configure.outputs.ref }}"
           else
             echo "::set-output name=repo-tags::$repo:${{ needs.configure.outputs.ref }},$repo:latest"
+            echo "::set-output name=ghcr-builder-tags::$builder_repo:${{ needs.configure.outputs.ref }},$builder_repo:latest"
           fi
 
-      - name: Docker login
-        uses: docker/login-action@v1
+      - name: Docker login GHCR
+        uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push builder image
+        uses: docker/build-push-action@v5
+        with:
+            context: ./
+            file: ./Dockerfile
+            builder: ${{ steps.buildx.outputs.name }}
+            build-args: |
+              DEFAULT_MODE=${{ matrix.mode }}
+            target: builder
+            push: true
+            tags: ${{ steps.setup.outputs.ghcr-builder-tags }}
+            cache-from: type=local,src=/tmp/.buildx-cache
+            cache-to: type=local,dest=/tmp/.buildx-cache
 
       - name: Build and push
         id: docker_build
-        uses: docker/build-push-action@v2
+        uses: docker/build-push-action@v5
         with:
-            context: ./ 
+            context: ./
             file: ./Dockerfile
             builder: ${{ steps.buildx.outputs.name }}
             build-args: |
@@ -219,15 +241,17 @@ jobs:
             relaunch-polycubed: false
             test-mode: SameInstance
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: true
           persist-credentials: false
           ref: ${{ needs.configure.outputs.ref }}
           repository: "${{ needs.configure.outputs.repo }}"
-      
+
       - name: Setup Python
-        uses: actions/setup-python@v1
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
       - name: Setup VirtualEnv
         run: python3 -m pip install --user virtualenv
@@ -245,11 +269,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install nmap
 
-      - name: Docker login with bot credentials
-        uses: docker/login-action@v1
+      - name: Docker login GHCR
+        uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prepare tests log directory
         run: sudo mkdir -p /var/log/polycube
@@ -282,7 +307,7 @@ jobs:
 
       - name: Upload tests result
         if: always()
-        uses: actions/upload-artifact@v2.2.0
+        uses: actions/upload-artifact@v4
         with:
           name: test_results_${{ matrix.test }}
           path: ./tests/output.xml
@@ -362,7 +387,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           # The changelog generation requires the entire history
           fetch-depth: 0
