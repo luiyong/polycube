@@ -164,6 +164,7 @@ jobs:
         id: setup
         run: |
           repo=${{ env.app-registry }}/${{ matrix.name }}
+
           builder_repo=ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}-builder
           if [[ "${{ needs.configure.outputs.state }}" == "dev" ]]; then
             echo "::set-output name=repo-tags::$repo:${{ needs.configure.outputs.ref }}"
@@ -174,6 +175,7 @@ jobs:
           fi
 
       - name: Docker login GHCR
+
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -198,6 +200,28 @@ jobs:
         run: |
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Docker login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push builder image
+        uses: docker/build-push-action@v5
+
+        with:
+            context: ./
+            file: ./Dockerfile
+            builder: ${{ steps.buildx.outputs.name }}
+            build-args: |
+              DEFAULT_MODE=${{ matrix.mode }}
+            target: builder
+            push: true
+            tags: ${{ steps.setup.outputs.ghcr-builder-tags }}
+            cache-from: type=local,src=/tmp/.buildx-cache
+            cache-to: type=local,dest=/tmp/.buildx-cache
 
       - name: Build and push
         id: docker_build
@@ -284,6 +308,7 @@ jobs:
           sudo apt-get install nmap
 
       - name: Docker login GHCR
+
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
