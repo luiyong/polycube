@@ -22,7 +22,6 @@
 #include <iostream>
 #include <regex>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <api/BPF.h>
@@ -43,9 +42,6 @@ class DatapathLog {
   void register_cb(int id, const log_msg_cb &cb);
   void unregister_cb(int id);
 
-  void start();
-  void stop();
-
   static void call_back_proxy(void *cb_cookie, void *data, int data_size);
   static std::string replace_string(std::string &subject,
                                     const std::string &search,
@@ -57,12 +53,11 @@ class DatapathLog {
 
  private:
   DatapathLog();
-  std::unique_ptr<std::thread> dbg_thread_;
   ebpf::BPF perf_buffer_;
   std::map<uint32_t, const log_msg_cb &> cbs_;
   std::mutex cbs_mutex_;  // protects the cbs_ container
   std::shared_ptr<spdlog::logger> logger;
-  bool stop_;
+  int perf_handle_;
   std::string base_code_;
 };
 

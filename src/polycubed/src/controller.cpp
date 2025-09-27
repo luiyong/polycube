@@ -20,12 +20,15 @@
 #include "cube_tc.h"
 #include "cube_xdp.h"
 #include "datapath_log.h"
+#include "ebpf_event_loop.h"
 #include "patchpanel.h"
 #include "utils/netlink.h"
 
 #include "polycube/services/utils.h"
 
 #include <iostream>
+#include <cstring>
+#include <api/BPFTable.h>
 #include <tins/tins.h>
 
 using namespace polycube::service;
@@ -250,10 +253,14 @@ Controller &Controller::get_xdp_instance() {
 
 Controller::Controller(const std::string &buffer_name,
                        const std::string &rx_code, enum bpf_prog_type type)
-    : buffer_name_(buffer_name),
+    : id_(PatchPanel::_POLYCUBE_MAX_NODES - 1),
+      metadata_table_(nullptr),
+      buffer_name_(buffer_name),
+      fd_tx_(0),
+      fd_rx_(0),
+      perf_handle_(-1),
       ctrl_rx_md_index_(0),
-      logger(spdlog::get("polycubed")),
-      id_(PatchPanel::_POLYCUBE_MAX_NODES - 1) {
+      logger(spdlog::get("polycubed")) {
   ebpf::StatusTuple res(0);
 
   if (type == BPF_PROG_TYPE_XDP)
@@ -288,13 +295,15 @@ Controller::Controller(const std::string &buffer_name,
     throw BPFError("cannot init controller perf buffer");
   }
 
-  res = buffer_module_.open_perf_buffer(buffer_name_, call_back_proxy, nullptr,
-                                        this);
-  if (res.code() != 0) {
-    logger->error("cannot open perf ring buffer for controller: {0}",
-                  res.msg());
-    throw BPFError("cannot open controller perf buffer");
+  int map_fd = buffer_module_.get_table(buffer_name_).get_fd();
+  int handle = EbpfEventLoop::get_instance().RegisterPerfBuffer(
+      map_fd, Controller::call_back_proxy, this);
+  if (handle < 0) {
+    logger->error("cannot register controller perf buffer: {}",
+                  std::strerror(-handle));
+    throw BPFError("cannot register controller perf buffer");
   }
+  perf_handle_ = handle;
 
   std::string cmd_string = "sysctl -w net.ipv6.conf." + iface_->getName() +
                            ".disable_ipv6=1" + "> /dev/null";
@@ -317,12 +326,14 @@ Controller::Controller(const std::string &buffer_name,
   auto t = rx_module_.get_array_table<metadata>("md_map_rx");
   metadata_table_ = std::unique_ptr<ebpf::BPFArrayTable<metadata>>(
       new ebpf::BPFArrayTable<metadata>(t));
-
-  start();
 }
 
 Controller::~Controller() {
-  stop();
+  DatapathLog::get_instance().unregister_cb(get_id());
+  if (perf_handle_ >= 0) {
+    EbpfEventLoop::get_instance().Unregister(perf_handle_);
+    perf_handle_ = -1;
+  }
 }
 
 uint32_t Controller::get_id() const {
@@ -369,31 +380,6 @@ void Controller::send_packet_to_cube(uint16_t module_index, bool is_netdev,
       iface_->send(const_cast<std::vector<uint8_t> &>(p));
   } else {
       iface_->send(const_cast<std::vector<uint8_t> &>(packet));
-  }
-}
-
-void Controller::start() {
-  // create a thread that polls the perf ring buffer
-  auto f = [&]() -> void {
-    stop_ = false;
-    while (!stop_) {
-      buffer_module_.poll_perf_buffer(buffer_name_, 500);
-    }
-
-    // TODO: this causes a segmentation fault
-    //  logger->debug("controller: stopping");
-  };
-
-  std::unique_ptr<std::thread> uptr(new std::thread(f));
-  pkt_in_thread_ = std::move(uptr);
-}
-
-void Controller::stop() {
-  //  logger->debug("controller stop()");
-  stop_ = true;
-  if (pkt_in_thread_) {
-    //  logger->debug("trying to join controller thread");
-    pkt_in_thread_->join();
   }
 }
 

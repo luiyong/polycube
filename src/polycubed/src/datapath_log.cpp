@@ -16,7 +16,11 @@
 
 #include "datapath_log.h"
 
+#include <cstring>
 #include <regex>
+
+#include "ebpf_event_loop.h"
+#include <api/BPFTable.h>
 
 namespace polycube {
 namespace polycubed {
@@ -144,26 +148,30 @@ DatapathLog &DatapathLog::get_instance() {
   return instance;
 }
 
-DatapathLog::DatapathLog() : logger(spdlog::get("polycubed")) {
+DatapathLog::DatapathLog()
+    : logger(spdlog::get("polycubed")), perf_handle_(-1) {
   auto res = perf_buffer_.init(LOG_BUFFER);
   if (res.code() != 0) {
     logger->error("impossible to load log buffer: {0}", res.msg());
     throw std::runtime_error("Error loading log buffer");
   }
 
-  res = perf_buffer_.open_perf_buffer("log_buffer", call_back_proxy, nullptr,
-                                      this);
-  if (res.code() != 0) {
-    logger->error("Cannot open perf ring buffer for controller: {0}",
-                  res.msg());
-    throw std::runtime_error("Error opening perf buffer: " + res.msg());
+  int map_fd = perf_buffer_.get_table("log_buffer").get_fd();
+  int handle = EbpfEventLoop::get_instance().RegisterPerfBuffer(
+      map_fd, DatapathLog::call_back_proxy, this);
+  if (handle < 0) {
+    logger->error("Cannot register log buffer perf event: {}",
+                  std::strerror(-handle));
+    throw std::runtime_error("Error registering perf buffer");
   }
-
-  start();
+  perf_handle_ = handle;
 }
 
 DatapathLog::~DatapathLog() {
-  stop();
+  if (perf_handle_ >= 0) {
+    EbpfEventLoop::get_instance().Unregister(perf_handle_);
+    perf_handle_ = -1;
+  }
 }
 
 void DatapathLog::register_cb(int id, const log_msg_cb &cb) {
@@ -174,29 +182,6 @@ void DatapathLog::register_cb(int id, const log_msg_cb &cb) {
 void DatapathLog::unregister_cb(int id) {
   std::lock_guard<std::mutex> guard(cbs_mutex_);
   cbs_.erase(id);
-}
-
-void DatapathLog::start() {
-  // create a thread that polls the perf ring buffer
-  auto f = [&]() -> void {
-    stop_ = false;
-    while (!stop_) {
-      perf_buffer_.poll_perf_buffer("log_buffer", 500);
-    }
-
-    // TODO: this causes a segmentation fault
-    //  logger->debug("controller: stopping");
-  };
-
-  std::unique_ptr<std::thread> uptr(new std::thread(f));
-  dbg_thread_ = std::move(uptr);
-}
-
-void DatapathLog::stop() {
-  stop_ = true;
-  if (dbg_thread_) {
-    dbg_thread_->join();
-  }
 }
 
 std::string DatapathLog::replace_string(std::string &subject,

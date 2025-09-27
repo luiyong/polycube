@@ -66,11 +66,11 @@ class CubeTC : public Cube {
   void unload(ebpf::BPF &bpf, ProgramType type);
 
   static void send_packet_ns_span_mode(void *cb_cookie, void *data, int data_size);
-  void start_thread_span_mode();
-  void stop_thread_span_mode();
-  bool stop_thread_;
-  std::unique_ptr<std::thread> pkt_in_thread_;
+  void attach_span_handler();
+  void detach_span_handler();
+  int span_event_handle_;
 
+  void reload_all() override;
   void set_span(const bool value) override;
 
  private:
