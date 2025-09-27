@@ -22,7 +22,6 @@
 #include <functional>
 #include <map>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include <api/BPF.h>
@@ -88,23 +87,17 @@ class Controller {
 
   uint32_t id_;
 
-  void start();
-  void stop();
-
   std::unique_ptr<ebpf::BPFArrayTable<metadata>> metadata_table_;
-
-  bool stop_;
 
   std::string buffer_name_;
   ebpf::BPF buffer_module_;
   ebpf::BPF rx_module_;
   int fd_tx_;
   int fd_rx_;
+  int perf_handle_;
 
   std::unique_ptr<viface::VIface> iface_;
   int ctrl_rx_md_index_;  // next position to write in the metadata map
-
-  std::unique_ptr<std::thread> pkt_in_thread_;
 
   static std::map<int, const packet_in_cb &> cbs_;
   static std::mutex cbs_mutex_;  // protects the cbs_ container

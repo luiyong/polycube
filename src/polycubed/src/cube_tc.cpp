@@ -17,11 +17,14 @@
 
 #include "cube_tc.h"
 #include "datapath_log.h"
+#include "ebpf_event_loop.h"
 #include "exceptions.h"
 #include "patchpanel.h"
 #include "utils/utils.h"
 
 #include <iostream>
+#include <cstring>
+#include <api/BPFTable.h>
 
 namespace polycube {
 namespace polycubed {
@@ -31,24 +34,19 @@ CubeTC::CubeTC(const std::string &name, const std::string &service_name,
                const std::vector<std::string> &egress_code, LogLevel level,
                bool shadow, bool span)
     : Cube(name, service_name, PatchPanel::get_tc_instance(), level,
-           CubeType::TC, shadow, span) {
+           CubeType::TC, shadow, span),
+      span_event_handle_(-1) {
   // it has to be done here becuase it needs the load, compile methods
   // to be ready
   Cube::init(ingress_code, egress_code);
   if (shadow && span) {
-    auto res = ingress_programs_[0]->open_perf_buffer("span_slowpath", send_packet_ns_span_mode, nullptr, this);
-    if (res.code() != 0) {
-      logger->error("cannot open perf ring buffer for span_slowpath: {0}", res.msg());
-      throw BPFError("cannot open span_slowpath perf buffer");
-    }
-    start_thread_span_mode();
+    attach_span_handler();
   }
 }
 
 CubeTC::~CubeTC() {
   // it cannot be done in Cube::~Cube() because calls a virtual method
-  if (get_span())
-    stop_thread_span_mode();
+  detach_span_handler();
   Cube::uninit();
 }
 
@@ -180,49 +178,53 @@ void CubeTC::send_packet_ns_span_mode(void *cb_cookie, void *data, int data_size
   }
 }
 
-void CubeTC::start_thread_span_mode() {
-  /* create a thread that polls the perf ring buffer "span_slowpath"
-   * if there are packets to send to the namespace */
-  auto f = [&]() -> void {
-    stop_thread_ = false;
-    while (!stop_thread_) {
-      ingress_programs_[0]->poll_perf_buffer("span_slowpath", 500);
-    }
-  };
-  std::unique_ptr<std::thread> uptr(new std::thread(f));
-  pkt_in_thread_ = std::move(uptr);
+void CubeTC::attach_span_handler() {
+  if (!get_shadow() || !get_span())
+    return;
+  if (span_event_handle_ >= 0)
+    return;
+  if (!ingress_programs_[0]) {
+    logger->error("cannot attach span handler: ingress program missing");
+    throw BPFError("cannot attach span handler");
+  }
+
+  int map_fd = ingress_programs_[0]->get_table("span_slowpath").get_fd();
+  int handle = EbpfEventLoop::get_instance().RegisterPerfBuffer(
+      map_fd, CubeTC::send_packet_ns_span_mode, this);
+  if (handle < 0) {
+    logger->error("cannot register span_slowpath perf buffer: {}",
+                  std::strerror(-handle));
+    throw BPFError("cannot register span_slowpath perf buffer");
+  }
+  span_event_handle_ = handle;
 }
 
-void CubeTC::stop_thread_span_mode() {
-  stop_thread_ = true;
-  if (pkt_in_thread_) {
-    pkt_in_thread_->join();
+void CubeTC::detach_span_handler() {
+  if (span_event_handle_ >= 0) {
+    EbpfEventLoop::get_instance().Unregister(span_event_handle_);
+    span_event_handle_ = -1;
+  }
+}
+
+void CubeTC::reload_all() {
+  bool had_handler = span_event_handle_ >= 0;
+  if (had_handler) {
+    detach_span_handler();
+  }
+
+  Cube::reload_all();
+
+  if (get_span()) {
+    attach_span_handler();
   }
 }
 
 void CubeTC::set_span(const bool value) {
-  if (!shadow_) {
-    throw std::runtime_error("Span mode is not present in no-shadow services");
-  }
   if (span_ == value) {
     return;
   }
-  span_ = value;
-
-  if (!span_) {
-    stop_thread_span_mode();
-  }
-
+  Cube::set_span(value);
   reload_all();
-
-  if (span_) {
-    auto res = ingress_programs_[0]->open_perf_buffer("span_slowpath", send_packet_ns_span_mode, nullptr, this);
-    if (res.code() != 0) {
-      logger->error("cannot open perf ring buffer for span_slowpath: {0}", res.msg());
-      throw BPFError("cannot open span_slowpath perf buffer");
-    }
-    start_thread_span_mode();
-  }
 }
 
 const std::string CubeTC::CUBE_TC_COMMON_WRAPPER = R"(

@@ -52,6 +52,7 @@ set(polycubed_sources
   transparent_cube_tc.cpp
   transparent_cube_xdp.cpp
   controller.cpp
+  ebpf_event_loop.cpp
   extiface.cpp
   extiface_tc.cpp
   extiface_xdp.cpp
